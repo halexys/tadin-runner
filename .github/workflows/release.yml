@@ -49,6 +49,7 @@ jobs:
   notify-start:
     runs-on: ubuntu-latest
     needs: [check-secrets]
+    environment: ${{ github.event.inputs.environment }}
     steps:
       - name: Notify build started
         run: |
@@ -62,6 +63,7 @@ jobs:
   build-wheel:
     runs-on: ubuntu-latest
     needs: [check-secrets, notify-start]
+    environment: ${{ github.event.inputs.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,10 +241,17 @@ jobs:
       - name: Deploy to VPS
         env:
           VERSION:      ${{ env.TADIN_VERSION }}
-          DEST:         ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/releases
+          TARGET_ENV:   ${{ github.event.inputs.environment }}
+          DEST_BASE:    ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/releases
           MARKET_URL:   ${{ vars.MARKET_URL }}
           RELEASES_URL: ${{ vars.RELEASES_URL }}
         run: |
+          if [ "$TARGET_ENV" = "staging" ]; then
+            DEST="${DEST_BASE}/staging"
+          else
+            DEST="${DEST_BASE}"
+          fi
+
           mkdir -p /tmp/release
           find release-artifacts -type f -exec cp {} /tmp/release/ \;
           cp dist/*.tpl /tmp/release/ 2>/dev/null || true
