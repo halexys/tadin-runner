@@ -6,6 +6,14 @@ on:
       version:
         description: 'Versión a buildear (ej: v0.1.5)'
         required: true
+      environment:
+        description: 'Environment destino'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
 
 env:
   TADIN_VERSION: ${{ github.event.inputs.version }}
@@ -14,6 +22,7 @@ env:
 jobs:
   check-secrets:
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
     steps:
       - name: Verify required secrets
         env:
@@ -32,10 +41,10 @@ jobs:
           [ -z "$VPS_SSH_KEY" ]               && MISSING="$MISSING VPS_SSH_KEY"
           [ -z "$NTFY_TOPIC" ]                && MISSING="$MISSING NTFY_TOPIC"
           if [ -n "$MISSING" ]; then
-            echo "::error::Secrets faltantes:$MISSING"
+            echo "::error::Secrets faltantes en '${{ github.event.inputs.environment }}':$MISSING"
             exit 1
           fi
-          echo "Todos los secrets están configurados."
+          echo "Todos los secrets están configurados (${{ github.event.inputs.environment }})."
 
   notify-start:
     runs-on: ubuntu-latest
@@ -44,10 +53,10 @@ jobs:
       - name: Notify build started
         run: |
           curl -s \
-            -H "Title: Tadin build iniciado" \
+            -H "Title: Tadin build iniciado (${{ github.event.inputs.environment }})" \
             -H "Tags: rocket" \
             -H "Priority: default" \
-            -d "Release ${{ env.TADIN_VERSION }} — build en progreso" \
+            -d "Release ${{ env.TADIN_VERSION }} → ${{ github.event.inputs.environment }} — build en progreso" \
             https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
 
   build-wheel:
@@ -90,6 +99,7 @@ jobs:
 
   build-tauri:
     needs: [check-secrets, notify-start]
+    environment: ${{ github.event.inputs.environment }}
     strategy:
       fail-fast: false
       matrix:
@@ -137,11 +147,22 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
-      - name: Patch version from tag
+      - name: Patch version and updater endpoint
+        env:
+          RELEASES_URL: ${{ vars.RELEASES_URL }}
         run: |
           VERSION="${{ env.TADIN_VERSION }}"
           VERSION="${VERSION#v}"
-          python3 -c "import json,sys; f='tadin-app/src-tauri/tauri.conf.json'; d=json.load(open(f)); d['version']=sys.argv[1]; json.dump(d,open(f,'w'),indent=2)" "$VERSION"
+          python3 - "$VERSION" "$RELEASES_URL" <<'PY'
+          import json, sys
+          version, releases_url = sys.argv[1], sys.argv[2]
+          f = 'tadin-app/src-tauri/tauri.conf.json'
+          d = json.load(open(f))
+          d['version'] = version
+          if releases_url:
+              d.setdefault('plugins', {}).setdefault('updater', {})['endpoints'] = [f"{releases_url}/latest.json"]
+          json.dump(d, open(f, 'w'), indent=2)
+          PY
 
       - name: Install npm dependencies
         working-directory: tadin-app
@@ -152,6 +173,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_MARKET_URL: ${{ vars.MARKET_URL }}
+          VITE_RELEASES_URL: ${{ vars.RELEASES_URL }}
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
             npx tauri build --target universal-apple-darwin
@@ -195,6 +218,7 @@ jobs:
   deploy:
     needs: [build-wheel, build-tauri]
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -214,16 +238,22 @@ jobs:
 
       - name: Deploy to VPS
         env:
-          VERSION: ${{ env.TADIN_VERSION }}
-          DEST: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/releases
+          VERSION:      ${{ env.TADIN_VERSION }}
+          DEST:         ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/releases
+          MARKET_URL:   ${{ vars.MARKET_URL }}
+          RELEASES_URL: ${{ vars.RELEASES_URL }}
         run: |
           mkdir -p /tmp/release
           find release-artifacts -type f -exec cp {} /tmp/release/ \;
-          cp dist/*.tpl /tmp/release/
+          cp dist/*.tpl /tmp/release/ 2>/dev/null || true
           rsync -az /tmp/release/ "${DEST}/${VERSION}/"
 
           VERSION_CLEAN="${VERSION#v}"
-          sed "s/TADIN_VERSION=\".*\"/TADIN_VERSION=\"${VERSION_CLEAN}\"/" install.sh > /tmp/install.sh
+          sed \
+            -e "s|TADIN_VERSION=\".*\"|TADIN_VERSION=\"${VERSION_CLEAN}\"|" \
+            -e "s|RELEASES_BASE=\".*\"|RELEASES_BASE=\"${RELEASES_URL}\"|" \
+            -e "s|MARKET_URL=\".*\"|MARKET_URL=\"${MARKET_URL}\"|" \
+            install.sh > /tmp/install.sh
           rsync -az /tmp/install.sh "${DEST}/install.sh"
 
           printf '{"version":"%s"}\n' "${VERSION_CLEAN}" > /tmp/version.json
@@ -233,7 +263,7 @@ jobs:
           MACOS_SIG=""
           [ -f /tmp/release/tadin-linux-x86_64.AppImage.sig ] && LINUX_SIG="$(cat /tmp/release/tadin-linux-x86_64.AppImage.sig)"
           [ -f /tmp/release/tadin-macos-universal.app.tar.gz.sig ] && MACOS_SIG="$(cat /tmp/release/tadin-macos-universal.app.tar.gz.sig)"
-          BASE_URL="https://releases.tadiin.me/${VERSION}"
+          BASE_URL="${RELEASES_URL}/${VERSION}"
           cat > /tmp/latest.json << LATEST_EOF
           {
             "version": "${VERSION_CLEAN}",
@@ -260,11 +290,12 @@ jobs:
         if: always()
         run: |
           STATUS="${{ job.status }}"
-          TITLE=$([ "$STATUS" = "success" ] && echo "Tadin build OK" || echo "Tadin build FAILED")
+          ENV="${{ github.event.inputs.environment }}"
+          TITLE=$([ "$STATUS" = "success" ] && echo "Tadin build OK ($ENV)" || echo "Tadin build FAILED ($ENV)")
           TAGS=$([ "$STATUS" = "success" ] && echo "white_check_mark" || echo "x")
           curl -s \
             -H "Title: $TITLE" \
             -H "Tags: $TAGS" \
             -H "Priority: high" \
-            -d "Release ${{ env.TADIN_VERSION }} — $STATUS" \
+            -d "Release ${{ env.TADIN_VERSION }} → $ENV — $STATUS" \
             https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
