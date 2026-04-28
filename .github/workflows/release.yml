@@ -1,114 +1,34 @@
-name: Release
+name: macOS Build
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versión a buildear (ej: v0.1.5)'
+        description: 'Versión (ej: v0.1.5)'
         required: true
       environment:
-        description: 'Environment destino'
+        description: 'Entorno (solo para notificaciones)'
         required: true
         default: 'production'
         type: choice
         options:
           - production
           - staging
+      releases_url:
+        description: 'URL base de releases (se parchea en tauri.conf.json)'
+        required: true
+      market_url:
+        description: 'URL del marketplace'
+        required: true
 
 env:
   TADIN_VERSION: ${{ github.event.inputs.version }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  check-secrets:
-    runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-    steps:
-      - name: Verify required secrets
-        env:
-          GH_PAT:                    ${{ secrets.GH_PAT }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          VPS_HOST:                  ${{ secrets.VPS_HOST }}
-          VPS_USER:                  ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY:               ${{ secrets.VPS_SSH_KEY }}
-          NTFY_TOPIC:                ${{ secrets.NTFY_TOPIC }}
-        run: |
-          MISSING=""
-          [ -z "$GH_PAT" ]                    && MISSING="$MISSING GH_PAT"
-          [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] && MISSING="$MISSING TAURI_SIGNING_PRIVATE_KEY"
-          [ -z "$VPS_HOST" ]                  && MISSING="$MISSING VPS_HOST"
-          [ -z "$VPS_USER" ]                  && MISSING="$MISSING VPS_USER"
-          [ -z "$VPS_SSH_KEY" ]               && MISSING="$MISSING VPS_SSH_KEY"
-          [ -z "$NTFY_TOPIC" ]                && MISSING="$MISSING NTFY_TOPIC"
-          if [ -n "$MISSING" ]; then
-            echo "::error::Secrets faltantes en '${{ github.event.inputs.environment }}':$MISSING"
-            exit 1
-          fi
-          echo "Todos los secrets están configurados (${{ github.event.inputs.environment }})."
-
-  notify-start:
-    runs-on: ubuntu-latest
-    needs: [check-secrets]
-    steps:
-      - name: Notify build started
-        run: |
-          curl -s \
-            -H "Title: Tadin build iniciado (${{ github.event.inputs.environment }})" \
-            -H "Tags: rocket" \
-            -H "Priority: default" \
-            -d "Release ${{ env.TADIN_VERSION }} → ${{ github.event.inputs.environment }} — build en progreso" \
-            https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
-
-  build-wheel:
-    runs-on: ubuntu-latest
-    needs: [check-secrets, notify-start]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: empty-nameAI/tadin-service
-          ref: ${{ env.TADIN_VERSION }}
-          token: ${{ secrets.GH_PAT }}
-
-      - name: Patch version from tag
-        run: |
-          VERSION="${{ env.TADIN_VERSION }}"
-          VERSION="${VERSION#v}"
-          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: false
-
-      - run: uv build --wheel
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: python-wheel
-          path: dist/*.whl
-
-      - name: Notify wheel result
-        if: always()
-        run: |
-          STATUS="${{ job.status }}"
-          TAGS=$([ "$STATUS" = "success" ] && echo "white_check_mark" || echo "x")
-          curl -s \
-            -H "Title: Wheel — $STATUS" \
-            -H "Tags: $TAGS" \
-            -d "Release ${{ env.TADIN_VERSION }} — Python wheel $STATUS" \
-            https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
-
-  build-tauri:
-    needs: [check-secrets, notify-start]
-    environment: ${{ github.event.inputs.environment }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: x86_64
-          - os: macos-14
-            arch: universal
-    runs-on: ${{ matrix.os }}
+  build-macos:
+    runs-on: macos-14
+    environment: production
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,36 +51,21 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Install macOS deps
-        if: runner.os == 'macOS'
-        run: brew install create-dmg
-
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+      - run: brew install create-dmg
 
       - name: Patch version and updater endpoint
-        env:
-          RELEASES_URL: ${{ vars.RELEASES_URL }}
         run: |
           VERSION="${{ env.TADIN_VERSION }}"
           VERSION="${VERSION#v}"
-          python3 - "$VERSION" "$RELEASES_URL" <<'PY'
+          python3 - "$VERSION" "${{ github.event.inputs.releases_url }}" << 'PY'
           import json, sys
-          version, releases_url = sys.argv[1], sys.argv[2]
+          ver, rel_url = sys.argv[1], sys.argv[2]
           f = 'tadin-app/src-tauri/tauri.conf.json'
           d = json.load(open(f))
-          d['version'] = version
-          if releases_url:
-              d.setdefault('plugins', {}).setdefault('updater', {})['endpoints'] = [f"{releases_url}/latest.json"]
+          d['version'] = ver
+          d.setdefault('plugins', {}).setdefault('updater', {})['endpoints'] = [f"{rel_url}/latest.json"]
           json.dump(d, open(f, 'w'), indent=2)
           PY
 
@@ -168,141 +73,39 @@ jobs:
         working-directory: tadin-app
         run: npm ci
 
-      - name: Build Tauri app
+      - name: Build Tauri (universal macOS)
         working-directory: tadin-app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_MARKET_URL: ${{ vars.MARKET_URL }}
-          VITE_RELEASES_URL: ${{ vars.RELEASES_URL }}
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            npx tauri build --target universal-apple-darwin
-          else
-            npx tauri build
-          fi
+          VITE_MARKET_URL: ${{ github.event.inputs.market_url }}
+          VITE_RELEASES_URL: ${{ github.event.inputs.releases_url }}
+        run: npx tauri build --target universal-apple-darwin
 
-      - name: Locate and rename artifacts
+      - name: Locate artifacts
         working-directory: tadin-app
         run: |
-          find src-tauri/target -name "*.AppImage"       -type f | head -1 | xargs -I{} mv {} "../tadin-linux-x86_64.AppImage"          2>/dev/null || true
-          find src-tauri/target -name "*.AppImage.sig"   -type f | head -1 | xargs -I{} mv {} "../tadin-linux-x86_64.AppImage.sig"      2>/dev/null || true
-          find src-tauri/target -name "*.deb"            -type f | head -1 | xargs -I{} mv {} "../tadin-linux-x86_64.deb"               2>/dev/null || true
-          find src-tauri/target -name "*.dmg"            -type f | head -1 | xargs -I{} mv {} "../tadin-macos-universal.dmg"            2>/dev/null || true
-          find src-tauri/target -name "*.app.tar.gz"     -type f | head -1 | xargs -I{} mv {} "../tadin-macos-universal.app.tar.gz"     2>/dev/null || true
+          find src-tauri/target -name "*.dmg"          -type f | head -1 | xargs -I{} mv {} "../tadin-macos-universal.dmg"            2>/dev/null || true
+          find src-tauri/target -name "*.app.tar.gz"   -type f | head -1 | xargs -I{} mv {} "../tadin-macos-universal.app.tar.gz"     2>/dev/null || true
           find src-tauri/target -name "*.app.tar.gz.sig" -type f | head -1 | xargs -I{} mv {} "../tadin-macos-universal.app.tar.gz.sig" 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tauri-${{ matrix.arch }}
+          name: macos
           path: |
-            tadin-linux-x86_64.AppImage
-            tadin-linux-x86_64.AppImage.sig
-            tadin-linux-x86_64.deb
             tadin-macos-universal.dmg
             tadin-macos-universal.app.tar.gz
             tadin-macos-universal.app.tar.gz.sig
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
-      - name: Notify Tauri result
+      - name: Notify
         if: always()
         run: |
           STATUS="${{ job.status }}"
           TAGS=$([ "$STATUS" = "success" ] && echo "white_check_mark" || echo "x")
           curl -s \
-            -H "Title: Tauri ${{ matrix.arch }} — $STATUS" \
+            -H "Title: macOS — $STATUS (${{ github.event.inputs.environment }})" \
             -H "Tags: $TAGS" \
-            -d "Release ${{ env.TADIN_VERSION }} — ${{ matrix.os }} $STATUS" \
-            https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
-
-  deploy:
-    needs: [build-wheel, build-tauri]
-    runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: empty-nameAI/tadin-service
-          ref: ${{ env.TADIN_VERSION }}
-          token: ${{ secrets.GH_PAT }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-
-      - name: Setup SSH
-        run: |
-          install -m 600 -D /dev/null ~/.ssh/id_ed25519
-          echo "${{ secrets.VPS_SSH_KEY }}" | base64 -d > ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
-
-      - name: Deploy to VPS
-        env:
-          VERSION:      ${{ env.TADIN_VERSION }}
-          TARGET_ENV:   ${{ github.event.inputs.environment }}
-          DEST_BASE:    ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/releases
-          MARKET_URL:   ${{ vars.MARKET_URL }}
-          RELEASES_URL: ${{ vars.RELEASES_URL }}
-        run: |
-          if [ "$TARGET_ENV" = "staging" ]; then
-            DEST="${DEST_BASE}/staging"
-          else
-            DEST="${DEST_BASE}"
-          fi
-
-          mkdir -p /tmp/release
-          find release-artifacts -type f -exec cp {} /tmp/release/ \;
-          cp dist/*.tpl /tmp/release/ 2>/dev/null || true
-          rsync -az /tmp/release/ "${DEST}/${VERSION}/"
-
-          VERSION_CLEAN="${VERSION#v}"
-          sed \
-            -e "s|TADIN_VERSION=\".*\"|TADIN_VERSION=\"${VERSION_CLEAN}\"|" \
-            -e "s|RELEASES_BASE=\".*\"|RELEASES_BASE=\"${RELEASES_URL}\"|" \
-            -e "s|MARKET_URL=\".*\"|MARKET_URL=\"${MARKET_URL}\"|" \
-            install.sh > /tmp/install.sh
-          rsync -az /tmp/install.sh "${DEST}/install.sh"
-
-          printf '{"version":"%s"}\n' "${VERSION_CLEAN}" > /tmp/version.json
-          rsync -az /tmp/version.json "${DEST}/version.json"
-
-          LINUX_SIG=""
-          MACOS_SIG=""
-          [ -f /tmp/release/tadin-linux-x86_64.AppImage.sig ] && LINUX_SIG="$(cat /tmp/release/tadin-linux-x86_64.AppImage.sig)"
-          [ -f /tmp/release/tadin-macos-universal.app.tar.gz.sig ] && MACOS_SIG="$(cat /tmp/release/tadin-macos-universal.app.tar.gz.sig)"
-          BASE_URL="${RELEASES_URL}/${VERSION}"
-          cat > /tmp/latest.json << LATEST_EOF
-          {
-            "version": "${VERSION_CLEAN}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "platforms": {
-              "linux-x86_64": {
-                "url": "${BASE_URL}/tadin-linux-x86_64.AppImage",
-                "signature": "${LINUX_SIG}"
-              },
-              "darwin-x86_64": {
-                "url": "${BASE_URL}/tadin-macos-universal.app.tar.gz",
-                "signature": "${MACOS_SIG}"
-              },
-              "darwin-aarch64": {
-                "url": "${BASE_URL}/tadin-macos-universal.app.tar.gz",
-                "signature": "${MACOS_SIG}"
-              }
-            }
-          }
-          LATEST_EOF
-          rsync -az /tmp/latest.json "${DEST}/latest.json"
-
-      - name: Notify deploy result
-        if: always()
-        run: |
-          STATUS="${{ job.status }}"
-          ENV="${{ github.event.inputs.environment }}"
-          TITLE=$([ "$STATUS" = "success" ] && echo "Tadin build OK ($ENV)" || echo "Tadin build FAILED ($ENV)")
-          TAGS=$([ "$STATUS" = "success" ] && echo "white_check_mark" || echo "x")
-          curl -s \
-            -H "Title: $TITLE" \
-            -H "Tags: $TAGS" \
-            -H "Priority: high" \
-            -d "Release ${{ env.TADIN_VERSION }} → $ENV — $STATUS" \
+            -H "Priority: default" \
+            -d "Release ${{ env.TADIN_VERSION }} — macOS $STATUS" \
             https://ntfy.sh/${{ secrets.NTFY_TOPIC }}
