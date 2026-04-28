@@ -49,7 +49,6 @@ jobs:
   notify-start:
     runs-on: ubuntu-latest
     needs: [check-secrets]
-    environment: ${{ github.event.inputs.environment }}
     steps:
       - name: Notify build started
         run: |
@@ -63,7 +62,6 @@ jobs:
   build-wheel:
     runs-on: ubuntu-latest
     needs: [check-secrets, notify-start]
-    environment: ${{ github.event.inputs.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
