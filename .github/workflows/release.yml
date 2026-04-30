@@ -53,7 +53,16 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - run: brew install create-dmg
+      - name: Free disk space
+        run: |
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes || true
+          sudo rm -rf ~/Library/Developer/Xcode/DerivedData || true
+          df -h /
+
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Patch version and updater endpoint
         run: |
