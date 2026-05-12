@@ -81,11 +81,13 @@ jobs:
             "tadin-app/src-tauri/scripts/install.ps1",
             "tadin-app/src-tauri/scripts/tadin-update.ps1"
           )) {
-            (Get-Content $f -Raw) `
-              -replace '\$TadinVersion\s*=\s*"[^"]*"', "`$TadinVersion = `"$version`"" `
-              -replace '\$ReleasesBase\s*=\s*"[^"]*"', "`$ReleasesBase = `"$relUrl`"" `
-              -replace '\$MarketUrl\s*=\s*"[^"]*"',    "`$MarketUrl    = `"$mktUrl`"" `
-              | Set-Content $f
+            if (Test-Path $f) {
+              (Get-Content $f -Raw) `
+                -replace '\$TadinVersion\s*=\s*"[^"]*"', "`$TadinVersion = `"$version`"" `
+                -replace '\$ReleasesBase\s*=\s*"[^"]*"', "`$ReleasesBase = `"$relUrl`"" `
+                -replace '\$MarketUrl\s*=\s*"[^"]*"',    "`$MarketUrl    = `"$mktUrl`"" `
+                | Set-Content $f
+            }
           }
 
       - name: Build Python wheel
@@ -127,9 +129,9 @@ jobs:
           $wheel = Get-ChildItem "dist\tadin_backend-*-py3-none-any.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($wheel) { Copy-Item $wheel.FullName "out\$($wheel.Name)" }
           # Scripts (patched versions)
-          Copy-Item tadin-app\src-tauri\scripts\install.ps1            out\install.ps1
-          Copy-Item tadin-app\src-tauri\scripts\tadin-service-start.ps1 out\tadin-service-start.ps1
-          Copy-Item tadin-app\src-tauri\scripts\tadin-update.ps1        out\tadin-update.ps1
+          Copy-Item tadin-app\src-tauri\scripts\install.ps1            out\install.ps1 -ErrorAction SilentlyContinue
+          Copy-Item tadin-app\src-tauri\scripts\tadin-service-start.ps1 out\tadin-service-start.ps1 -ErrorAction SilentlyContinue
+          Copy-Item tadin-app\src-tauri\scripts\tadin-update.ps1        out\tadin-update.ps1 -ErrorAction SilentlyContinue
           Get-ChildItem out
 
       - uses: actions/upload-artifact@v4
