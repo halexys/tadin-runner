@@ -94,8 +94,11 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
+          # PEP 440 forbids semver pre-release syntax (e.g. 0.1.8-staging).
+          # Strip everything after the first '-' for the wheel version.
+          $pyVersion = $version -replace '-.*$', ''
           (Get-Content pyproject.toml) `
-            -replace '^version\s*=\s*".*"', "version = `"$version`"" `
+            -replace '^version\s*=\s*".*"', "version = `"$pyVersion`"" `
             | Set-Content pyproject.toml
           uv build --wheel --out-dir dist
 
