@@ -25,7 +25,32 @@ env:
   TADIN_VERSION: ${{ github.event.inputs.version }}
 
 jobs:
+  # ── Build the Linux sandbox container image on an ubuntu runner ───────────
+  build-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: empty-nameAI/tadin-app
+          ref: ${{ env.TADIN_VERSION }}
+          token: ${{ secrets.GH_PAT }}
+          path: tadin-app
+
+      - name: Build and export sandbox image
+        run: |
+          docker build -t tadin-sandbox:base \
+            -f tadin-app/src-tauri/scripts/Dockerfile.sandbox \
+            tadin-app/src-tauri/scripts/
+          docker save tadin-sandbox:base | xz -9e -T0 > tadin-sandbox.tar.xz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-image
+          path: tadin-sandbox.tar.xz
+
+  # ── Main Windows build ────────────────────────────────────────────────────
   build-windows:
+    needs: [build-sandbox]
     runs-on: windows-latest
     environment: production
     steps:
@@ -57,10 +82,32 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Install uv
+        shell: pwsh
         run: |
           irm https://astral.sh/uv/install.ps1 | iex
           "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Download sandbox image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-image
+          path: tadin-app/src-tauri/scripts/
+
+      - name: Download Podman MSI and SurrealDB
         shell: pwsh
+        run: |
+          $scriptsDir = "tadin-app/src-tauri/scripts"
+          $content = Get-Content "$scriptsDir/install.ps1" -Raw
+          $podmanVer  = [regex]::Match($content, '\$PodmanVersion\s*=\s*"([^"]+)"').Groups[1].Value
+          $surrealVer = [regex]::Match($content, '\$SurrealVersion\s*=\s*"([^"]+)"').Groups[1].Value
+
+          Write-Host "Podman $podmanVer / SurrealDB $surrealVer"
+
+          $podmanUrl  = "https://github.com/containers/podman/releases/download/$podmanVer/podman-installer-windows-amd64.msi"
+          $surrealUrl = "https://github.com/surrealdb/surrealdb/releases/download/$surrealVer/surreal-$surrealVer.windows-amd64.exe"
+
+          Invoke-WebRequest $podmanUrl  -OutFile "$scriptsDir/podman-installer-windows-amd64.msi" -UseBasicParsing
+          Invoke-WebRequest $surrealUrl -OutFile "$scriptsDir/surreal.exe"                        -UseBasicParsing
 
       - name: Patch version and updater endpoint
         shell: pwsh
@@ -124,21 +171,17 @@ jobs:
         run: |
           $bundleDir = "tadin-app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis"
           New-Item -ItemType Directory -Force out | Out-Null
-          # NSIS setup .exe (full installer)
           $setup = Get-ChildItem "$bundleDir\*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($setup) { Copy-Item $setup.FullName "out\tadin-windows-x86_64-setup.exe" }
-          # Updater package .nsis.zip + signature
           $zip = Get-ChildItem "$bundleDir\*-setup.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($zip) { Copy-Item $zip.FullName "out\tadin-windows-x86_64.nsis.zip" }
           $sig = Get-ChildItem "$bundleDir\*-setup.nsis.zip.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($sig) { Copy-Item $sig.FullName "out\tadin-windows-x86_64.nsis.zip.sig" }
-          # Wheel (built earlier)
           $wheel = Get-ChildItem "dist\tadin_backend-*-py3-none-any.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($wheel) { Copy-Item $wheel.FullName "out\$($wheel.Name)" }
-          # Scripts (patched versions)
-          Copy-Item tadin-app\src-tauri\scripts\install.ps1            out\install.ps1 -ErrorAction SilentlyContinue
+          Copy-Item tadin-app\src-tauri\scripts\install.ps1             out\install.ps1             -ErrorAction SilentlyContinue
           Copy-Item tadin-app\src-tauri\scripts\tadin-service-start.ps1 out\tadin-service-start.ps1 -ErrorAction SilentlyContinue
-          Copy-Item tadin-app\src-tauri\scripts\tadin-update.ps1        out\tadin-update.ps1 -ErrorAction SilentlyContinue
+          Copy-Item tadin-app\src-tauri\scripts\tadin-update.ps1        out\tadin-update.ps1        -ErrorAction SilentlyContinue
           Get-ChildItem out
 
       - uses: actions/upload-artifact@v4
