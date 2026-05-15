@@ -97,7 +97,7 @@ jobs:
         shell: pwsh
         run: |
           $scriptsDir = "tadin-app/src-tauri/scripts"
-          $content = Get-Content "$scriptsDir/install.ps1" -Raw
+          $content = Get-Content "$scriptsDir/install.ps1" -Raw -Encoding UTF8
           $podmanVer  = [regex]::Match($content, '\$PodmanVersion\s*=\s*"([^"]+)"').Groups[1].Value
           $surrealVer = [regex]::Match($content, '\$SurrealVersion\s*=\s*"([^"]+)"').Groups[1].Value
 
@@ -138,11 +138,11 @@ jobs:
             "tadin-app/src-tauri/scripts/tadin-update.ps1"
           )) {
             if (Test-Path $f) {
-              (Get-Content $f -Raw) `
+              (Get-Content $f -Raw -Encoding UTF8) `
                 -replace '\$TadinVersion\s*=\s*"[^"]*"', "`$TadinVersion = `"$version`"" `
                 -replace '\$ReleasesBase\s*=\s*"[^"]*"', "`$ReleasesBase = `"$relUrl`"" `
                 -replace '\$MarketUrl\s*=\s*"[^"]*"',    "`$MarketUrl    = `"$mktUrl`"" `
-                | Set-Content $f
+                | Set-Content $f -Encoding UTF8
             }
           }
 
