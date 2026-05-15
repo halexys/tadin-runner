@@ -106,8 +106,13 @@ jobs:
           $podmanUrl  = "https://github.com/containers/podman/releases/download/$podmanVer/podman-installer-windows-amd64.msi"
           $surrealUrl = "https://github.com/surrealdb/surrealdb/releases/download/$surrealVer/surreal-$surrealVer.windows-amd64.exe"
 
-          Invoke-WebRequest $podmanUrl  -OutFile "$scriptsDir/podman-installer-windows-amd64.msi" -UseBasicParsing
-          Invoke-WebRequest $surrealUrl -OutFile "$scriptsDir/surreal.exe"                        -UseBasicParsing
+          # curl.exe (not the PowerShell alias) follows GitHub redirects correctly
+          # and returns a non-zero exit code on HTTP errors (-f flag).
+          curl.exe -fsSL -o "$scriptsDir/podman-installer-windows-amd64.msi" $podmanUrl
+          if ($LASTEXITCODE -ne 0) { throw "Descarga de Podman falló (exit $LASTEXITCODE): $podmanUrl" }
+
+          curl.exe -fsSL -o "$scriptsDir/surreal.exe" $surrealUrl
+          if ($LASTEXITCODE -ne 0) { throw "Descarga de SurrealDB falló (exit $LASTEXITCODE): $surrealUrl" }
 
       - name: Patch version and updater endpoint
         shell: pwsh
