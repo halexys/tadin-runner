@@ -157,7 +157,7 @@ jobs:
             }
           }
 
-      - name: Build Python wheel
+      - name: Build Python wheel and bundle deps
         shell: pwsh
         run: |
           $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
@@ -168,6 +168,19 @@ jobs:
             -replace '^version\s*=\s*".*"', "version = `"$pyVersion`"" `
             | Set-Content pyproject.toml
           uv build --wheel --out-dir dist
+
+          # Download all transitive dependencies (including the wheel itself)
+          # so the installer can run fully offline with --no-index --find-links.
+          $scriptsDir = "tadin-app/src-tauri/scripts"
+          $depsDir    = "$scriptsDir/deps-tmp"
+          $wheel      = Get-ChildItem "dist/tadin_backend-*.whl" | Select-Object -First 1
+          New-Item -ItemType Directory -Force $depsDir | Out-Null
+          uv pip download --python-version 3.13 --platform win_amd64 `
+            --only-binary :all: --dest $depsDir $wheel.FullName
+          Copy-Item $wheel.FullName $depsDir
+          Compress-Archive -Path "$depsDir/*" -DestinationPath "$scriptsDir/tadin-deps.zip" -Force
+          Remove-Item -Recurse -Force $depsDir
+          Write-Host "Bundled deps: $((Get-Item $scriptsDir/tadin-deps.zip).Length / 1MB) MB"
 
       - name: Install dependencies
         working-directory: tadin-app
