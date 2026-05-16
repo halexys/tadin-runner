@@ -201,7 +201,7 @@ jobs:
           # Use uv-managed Python 3.13 (runner default is 3.12 which fails wheel requires).
           $pipVenv = "$env:TEMP\pip-dl-venv"
           uv venv $pipVenv --python 3.13 --seed
-          & "$pipVenv\Scripts\python.exe" -m pip download --only-binary :all: --dest $depsDir $wheel.FullName
+          & "$pipVenv\Scripts\python.exe" -m pip download --prefer-binary --dest $depsDir $wheel.FullName
           if ($LASTEXITCODE -ne 0) { throw "pip download failed (exit $LASTEXITCODE)" }
           Remove-Item -Recurse -Force $pipVenv
           Copy-Item $wheel.FullName $depsDir
