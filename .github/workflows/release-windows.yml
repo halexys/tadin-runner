@@ -192,16 +192,18 @@ jobs:
 
           # Download all transitive dependencies (including the wheel itself)
           # so the installer can run fully offline with --no-index --find-links.
+          # uv has no 'pip download' subcommand -- use pip directly.
+          # The runner is already Windows x86_64 so no --platform flag needed.
           $scriptsDir = "tadin-app/src-tauri/scripts"
           $depsDir    = "$scriptsDir/deps-tmp"
           $wheel      = Get-ChildItem "dist/tadin_backend-*.whl" | Select-Object -First 1
           New-Item -ItemType Directory -Force $depsDir | Out-Null
-          uv pip download --python-version 3.13 --platform win_amd64 `
-            --only-binary :all: --dest $depsDir $wheel.FullName
+          python -m pip download --only-binary :all: --dest $depsDir $wheel.FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip download failed (exit $LASTEXITCODE)" }
           Copy-Item $wheel.FullName $depsDir
           Compress-Archive -Path "$depsDir/*" -DestinationPath "$scriptsDir/tadin-deps.zip" -Force
           Remove-Item -Recurse -Force $depsDir
-          Write-Host "Bundled deps: $((Get-Item $scriptsDir/tadin-deps.zip).Length / 1MB) MB"
+          Write-Host "Bundled deps: $([math]::Round((Get-Item $scriptsDir/tadin-deps.zip).Length / 1MB, 1)) MB"
 
       - name: Install dependencies
         working-directory: tadin-app
