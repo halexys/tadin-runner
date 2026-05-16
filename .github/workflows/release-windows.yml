@@ -93,7 +93,7 @@ jobs:
           name: sandbox-image
           path: tadin-app/src-tauri/scripts/
 
-      - name: Download Podman MSI and SurrealDB
+      - name: Download Podman MSI, SurrealDB and uv
         shell: pwsh
         run: |
           $scriptsDir = "tadin-app/src-tauri/scripts"
@@ -101,18 +101,29 @@ jobs:
           $podmanVer  = [regex]::Match($content, '\$PodmanVersion\s*=\s*"([^"]+)"').Groups[1].Value
           $surrealVer = [regex]::Match($content, '\$SurrealVersion\s*=\s*"([^"]+)"').Groups[1].Value
 
-          Write-Host "Podman $podmanVer / SurrealDB $surrealVer"
+          # Fetch latest uv release tag from GitHub API.
+          $uvLatest = (Invoke-RestMethod "https://api.github.com/repos/astral-sh/uv/releases/latest").tag_name
+
+          Write-Host "Podman $podmanVer / SurrealDB $surrealVer / uv $uvLatest"
 
           $podmanUrl  = "https://github.com/containers/podman/releases/download/$podmanVer/podman-installer-windows-amd64.msi"
           $surrealUrl = "https://github.com/surrealdb/surrealdb/releases/download/$surrealVer/surreal-$surrealVer.windows-amd64.exe"
+          $uvZipUrl   = "https://github.com/astral-sh/uv/releases/download/$uvLatest/uv-x86_64-pc-windows-msvc.zip"
 
           # curl.exe (not the PowerShell alias) follows GitHub redirects correctly
           # and returns a non-zero exit code on HTTP errors (-f flag).
           curl.exe -fsSL -o "$scriptsDir/podman-installer-windows-amd64.msi" $podmanUrl
-          if ($LASTEXITCODE -ne 0) { throw "Descarga de Podman falló (exit $LASTEXITCODE): $podmanUrl" }
+          if ($LASTEXITCODE -ne 0) { throw "Podman download failed (exit $LASTEXITCODE): $podmanUrl" }
 
           curl.exe -fsSL -o "$scriptsDir/surreal.exe" $surrealUrl
-          if ($LASTEXITCODE -ne 0) { throw "Descarga de SurrealDB falló (exit $LASTEXITCODE): $surrealUrl" }
+          if ($LASTEXITCODE -ne 0) { throw "SurrealDB download failed (exit $LASTEXITCODE): $surrealUrl" }
+
+          $uvZip = Join-Path $env:TEMP "uv-windows.zip"
+          curl.exe -fsSL -o $uvZip $uvZipUrl
+          if ($LASTEXITCODE -ne 0) { throw "uv download failed (exit $LASTEXITCODE): $uvZipUrl" }
+          Expand-Archive -Path $uvZip -DestinationPath "$scriptsDir/uv-tmp" -Force
+          Move-Item "$scriptsDir/uv-tmp/uv.exe" "$scriptsDir/uv.exe" -Force
+          Remove-Item -Recurse -Force "$scriptsDir/uv-tmp", $uvZip
 
       - name: Patch version and updater endpoint
         shell: pwsh
