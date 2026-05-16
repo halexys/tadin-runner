@@ -125,6 +125,27 @@ jobs:
           Move-Item "$scriptsDir/uv-tmp/uv.exe" "$scriptsDir/uv.exe" -Force
           Remove-Item -Recurse -Force "$scriptsDir/uv-tmp", $uvZip
 
+          # Podman WSL machine image -- lets install.ps1 run podman machine init offline.
+          # Find the asset dynamically so we don't hardcode the filename across Podman versions.
+          $podmanAssets = (Invoke-RestMethod `
+              "https://api.github.com/repos/containers/podman/releases/tags/$podmanVer" `
+              -Headers @{ 'User-Agent' = 'tadin-ci' }).assets
+          $machineAsset = $podmanAssets |
+              Where-Object { $_.name -match 'machine' -and $_.name -match '(wsl|windows)' } |
+              Select-Object -First 1
+          if (-not $machineAsset) {
+              # Fallback: any asset with 'wsl' in its name
+              $machineAsset = $podmanAssets | Where-Object { $_.name -match '\.wsl\.' } | Select-Object -First 1
+          }
+          if ($machineAsset) {
+              $sizeMB = [math]::Round($machineAsset.size / 1MB)
+              Write-Host "Podman machine image: $($machineAsset.name) (${sizeMB} MB)"
+              curl.exe -fsSL -o "$scriptsDir/podman-machine.tar.xz" $machineAsset.browser_download_url
+              if ($LASTEXITCODE -ne 0) { throw "Podman machine image download failed: $($machineAsset.browser_download_url)" }
+          } else {
+              Write-Warning "No Podman WSL machine image asset found for $podmanVer -- installer will download at runtime"
+          }
+
       - name: Patch version and updater endpoint
         shell: pwsh
         run: |
