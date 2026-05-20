@@ -43,10 +43,16 @@ jobs:
           path: tadin-app
           token: ${{ secrets.GH_PAT }}
 
-      - uses: pnpm/action-setup@v4
+      # Install Node 24 FIRST so pnpm/action-setup (which honors the
+      # "packageManager": "pnpm@11.x" field in tadin-app/package.json,
+      # requires Node >=22.13) doesn't crash on the runner's default Node 20.
+      - uses: actions/setup-node@v4
         with:
-          version: 10
+          node-version: '24'
 
+      - uses: pnpm/action-setup@v4
+
+      # Re-run setup-node with the pnpm cache now that pnpm is installed.
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
