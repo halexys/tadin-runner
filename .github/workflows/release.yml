@@ -51,6 +51,11 @@ jobs:
           node-version: '24'
 
       - uses: pnpm/action-setup@v4
+        with:
+          # tadin-app is cloned into ./tadin-app/, not the root of this runner repo,
+          # so point the action at the right package.json to read the
+          # "packageManager": "pnpm@X.Y.Z" pin.
+          package_json_file: tadin-app/package.json
 
       # Re-run setup-node with the pnpm cache now that pnpm is installed.
       - uses: actions/setup-node@v4
