@@ -89,6 +89,8 @@ jobs:
           New-Item -ItemType Directory -Force tadin-installer/embed | Out-Null
           $wheel = Get-ChildItem "dist/tadin_backend-*.whl" | Select-Object -First 1
           Copy-Item $wheel.FullName tadin-installer/embed/tadin_backend.whl
+          # pip exige el nombre real del wheel ({nombre}-{versión}-...whl) al instalar.
+          Set-Content -NoNewline -Path tadin-installer/embed/wheel_name.txt -Value $wheel.Name
           # Las deps del wheel se resuelven desde PyPI en la instalación (público).
 
       - name: Install node deps
