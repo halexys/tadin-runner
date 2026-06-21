@@ -25,32 +25,7 @@ env:
   TADIN_VERSION: ${{ github.event.inputs.version }}
 
 jobs:
-  # ── Build the Linux sandbox container image on an ubuntu runner ───────────
-  build-sandbox:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: empty-nameAI/tadin-app
-          ref: ${{ env.TADIN_VERSION }}
-          token: ${{ secrets.GH_PAT }}
-          path: tadin-app
-
-      - name: Build and export sandbox image
-        run: |
-          docker build -t tadin-sandbox:base \
-            -f tadin-app/src-tauri/scripts/Dockerfile.sandbox \
-            tadin-app/src-tauri/scripts/
-          docker save tadin-sandbox:base | xz -9e -T0 > tadin-sandbox.tar.xz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sandbox-image
-          path: tadin-sandbox.tar.xz
-
-  # ── Main Windows build ────────────────────────────────────────────────────
   build-windows:
-    needs: [build-sandbox]
     runs-on: windows-latest
     environment: production
     steps:
@@ -65,6 +40,12 @@ jobs:
           repository: empty-nameAI/tadin-app
           ref: ${{ env.TADIN_VERSION }}
           path: tadin-app
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: empty-nameAI/tadin-installer
+          path: tadin-installer
           token: ${{ secrets.GH_PAT }}
 
       - uses: pnpm/action-setup@v4
@@ -87,150 +68,121 @@ jobs:
           irm https://astral.sh/uv/install.ps1 | iex
           "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Download sandbox image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sandbox-image
-          path: tadin-app/src-tauri/scripts/
-
-      - name: Download Podman MSI, SurrealDB and uv
+      - name: Download SurrealDB, uv and VC++ redist
         shell: pwsh
         run: |
-          $scriptsDir = "tadin-app/src-tauri/scripts"
-          $content = Get-Content "$scriptsDir/install.ps1" -Raw -Encoding UTF8
-          $podmanVer  = [regex]::Match($content, '\$PodmanVersion\s*=\s*"([^"]+)"').Groups[1].Value
-          $surrealVer = [regex]::Match($content, '\$SurrealVersion\s*=\s*"([^"]+)"').Groups[1].Value
+          $payload = "payload"
+          New-Item -ItemType Directory -Force $payload | Out-Null
 
-          # Fetch latest uv release tag from GitHub API.
+          # Versión de SurrealDB que espera el servicio (verbatim del antiguo install.ps1).
+          $surrealVer = "v3.0.5"
           $uvLatest = (Invoke-RestMethod "https://api.github.com/repos/astral-sh/uv/releases/latest").tag_name
+          Write-Host "SurrealDB $surrealVer / uv $uvLatest"
 
-          Write-Host "Podman $podmanVer / SurrealDB $surrealVer / uv $uvLatest"
-
-          $podmanUrl  = "https://github.com/containers/podman/releases/download/$podmanVer/podman-installer-windows-amd64.msi"
           $surrealUrl = "https://github.com/surrealdb/surrealdb/releases/download/$surrealVer/surreal-$surrealVer.windows-amd64.exe"
           $uvZipUrl   = "https://github.com/astral-sh/uv/releases/download/$uvLatest/uv-x86_64-pc-windows-msvc.zip"
+          $vcUrl      = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
-          # curl.exe (not the PowerShell alias) follows GitHub redirects correctly
-          # and returns a non-zero exit code on HTTP errors (-f flag).
-          curl.exe -fsSL -o "$scriptsDir/podman-installer-windows-amd64.msi" $podmanUrl
-          if ($LASTEXITCODE -ne 0) { throw "Podman download failed (exit $LASTEXITCODE): $podmanUrl" }
-
-          curl.exe -fsSL -o "$scriptsDir/surreal.exe" $surrealUrl
-          if ($LASTEXITCODE -ne 0) { throw "SurrealDB download failed (exit $LASTEXITCODE): $surrealUrl" }
+          curl.exe -fsSL -o "$payload/surreal.exe" $surrealUrl
+          if ($LASTEXITCODE -ne 0) { throw "SurrealDB download failed: $surrealUrl" }
 
           $uvZip = Join-Path $env:TEMP "uv-windows.zip"
           curl.exe -fsSL -o $uvZip $uvZipUrl
-          if ($LASTEXITCODE -ne 0) { throw "uv download failed (exit $LASTEXITCODE): $uvZipUrl" }
-          Expand-Archive -Path $uvZip -DestinationPath "$scriptsDir/uv-tmp" -Force
-          Move-Item "$scriptsDir/uv-tmp/uv.exe" "$scriptsDir/uv.exe" -Force
-          Remove-Item -Recurse -Force "$scriptsDir/uv-tmp", $uvZip
+          if ($LASTEXITCODE -ne 0) { throw "uv download failed: $uvZipUrl" }
+          Expand-Archive -Path $uvZip -DestinationPath "$payload/uv-tmp" -Force
+          Move-Item "$payload/uv-tmp/uv.exe" "$payload/uv.exe" -Force
+          Remove-Item -Recurse -Force "$payload/uv-tmp", $uvZip
 
-          # Podman machine OS image (~1 GB OCI artifact from quay.io) is too large to bundle.
-          # install.ps1 runs `podman machine init` online at first launch.
+          curl.exe -fsSL -o "$payload/vc_redist.x64.exe" $vcUrl
+          if ($LASTEXITCODE -ne 0) { throw "VC++ redist download failed: $vcUrl" }
 
-      - name: Patch version and updater endpoint
+      - name: Patch tauri version
         shell: pwsh
         run: |
           $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
-          $relUrl = "${{ github.event.inputs.releases_url }}"
           $confPath = "tadin-app/src-tauri/tauri.conf.json"
           $d = Get-Content $confPath -Raw | ConvertFrom-Json -AsHashtable
           $d.version = $version
-          if (-not $d.plugins) { $d.plugins = @{} }
-          if (-not $d.plugins.updater) { $d.plugins.updater = @{} }
-          $d.plugins.updater.endpoints = @("$relUrl/latest.json")
           $d | ConvertTo-Json -Depth 50 | Set-Content $confPath
-
-      - name: Patch install.ps1 / tadin-update.ps1 placeholders
-        shell: pwsh
-        run: |
-          $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
-          $relUrl  = "${{ github.event.inputs.releases_url }}"
-          $mktUrl  = "${{ github.event.inputs.market_url }}"
-          foreach ($f in @(
-            "tadin-app/src-tauri/scripts/install.ps1",
-            "tadin-app/src-tauri/scripts/tadin-update.ps1"
-          )) {
-            if (Test-Path $f) {
-              (Get-Content $f -Raw -Encoding UTF8) `
-                -replace '\$TadinVersion\s*=\s*"[^"]*"', "`$TadinVersion = `"$version`"" `
-                -replace '\$ReleasesBase\s*=\s*"[^"]*"', "`$ReleasesBase = `"$relUrl`"" `
-                -replace '\$MarketUrl\s*=\s*"[^"]*"',    "`$MarketUrl    = `"$mktUrl`"" `
-                | Set-Content $f -Encoding UTF8
-            }
-          }
 
       - name: Build Python wheel and bundle deps
         shell: pwsh
         run: |
           $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
-          # PEP 440 forbids semver pre-release syntax (e.g. 0.1.8-staging).
-          # Strip everything after the first '-' for the wheel version.
+          # PEP 440 prohíbe sufijos semver (0.1.8-staging) en el wheel.
           $pyVersion = $version -replace '-.*$', ''
           (Get-Content pyproject.toml) `
             -replace '^version\s*=\s*".*"', "version = `"$pyVersion`"" `
             | Set-Content pyproject.toml
           uv build --wheel --out-dir dist
 
-          # Download all transitive dependencies (including the wheel itself)
-          # so the installer can run fully offline with --no-index --find-links.
-          # uv has no 'pip download' subcommand -- use pip directly.
-          # The runner is already Windows x86_64 so no --platform flag needed.
-          $scriptsDir = "tadin-app/src-tauri/scripts"
-          $depsDir    = "$scriptsDir/deps-tmp"
-          $wheel      = Get-ChildItem "dist/tadin_backend-*.whl" | Select-Object -First 1
-          New-Item -ItemType Directory -Force $depsDir | Out-Null
-          # Use uv-managed Python 3.13 (runner default is 3.12 which fails wheel requires).
+          # Deps offline para el venv del instalador (--no-index --find-links).
+          $payload = "payload"
+          $wheel   = Get-ChildItem "dist/tadin_backend-*.whl" | Select-Object -First 1
           $pipVenv = "$env:TEMP\pip-dl-venv"
           uv venv $pipVenv --python 3.13 --seed
-          & "$pipVenv\Scripts\python.exe" -m pip download --prefer-binary --dest $depsDir $wheel.FullName
+          & "$pipVenv\Scripts\python.exe" -m pip download --prefer-binary --dest $payload $wheel.FullName
           if ($LASTEXITCODE -ne 0) { throw "pip download failed (exit $LASTEXITCODE)" }
           Remove-Item -Recurse -Force $pipVenv
-          Copy-Item $wheel.FullName $depsDir
-          Compress-Archive -Path "$depsDir/*" -DestinationPath "$scriptsDir/tadin-deps.zip" -Force
-          Remove-Item -Recurse -Force $depsDir
-          Write-Host "Bundled deps: $([math]::Round((Get-Item $scriptsDir/tadin-deps.zip).Length / 1MB, 1)) MB"
+          Copy-Item $wheel.FullName $payload
+          Write-Host "Wheel + deps en payload/"
 
-      - name: Install dependencies
+      - name: Install node deps
         working-directory: tadin-app
         run: pnpm install --frozen-lockfile
 
-      - name: Build Tauri (Windows NSIS)
+      - name: Build Tauri app (sin bundle)
         working-directory: tadin-app
+        env:
+          VITE_MARKET_URL: ${{ github.event.inputs.market_url }}
+          VITE_RELEASES_URL: ${{ github.event.inputs.releases_url }}
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles none
+          Copy-Item "src-tauri/target/x86_64-pc-windows-msvc/release/tadin.exe" "../payload/tadin.exe"
+
+      - name: Build installer (Rust)
+        working-directory: tadin-installer
+        env:
+          TADIN_RELEASES_BASE: ${{ github.event.inputs.releases_url }}
+        run: |
+          cargo build --release --target x86_64-pc-windows-msvc
+          $rel = "target/x86_64-pc-windows-msvc/release"
+          Copy-Item "$rel/tadin-agent.exe" "../payload/tadin-agent.exe"
+          # tadin-setup.exe NO va en payload: es el binario que el usuario descarga aparte.
+          New-Item -ItemType Directory -Force ../out | Out-Null
+          Copy-Item "$rel/tadin-setup.exe" "../out/tadin-setup.exe"
+
+      - name: Sign payloads and build manifest
+        shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VITE_MARKET_URL: ${{ github.event.inputs.market_url }}
-          VITE_RELEASES_URL: ${{ github.event.inputs.releases_url }}
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
-
-      - name: Collect artifacts
-        shell: pwsh
         run: |
-          $bundleDir = "tadin-app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis"
-          New-Item -ItemType Directory -Force out | Out-Null
-          $setup = Get-ChildItem "$bundleDir\*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($setup) { Copy-Item $setup.FullName "out\tadin-windows-x86_64-setup.exe" }
-          $zip = Get-ChildItem "$bundleDir\*-setup.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($zip) { Copy-Item $zip.FullName "out\tadin-windows-x86_64.nsis.zip" }
-          $sig = Get-ChildItem "$bundleDir\*-setup.nsis.zip.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($sig) { Copy-Item $sig.FullName "out\tadin-windows-x86_64.nsis.zip.sig" }
-          $wheel = Get-ChildItem "dist\tadin_backend-*-py3-none-any.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($wheel) { Copy-Item $wheel.FullName "out\$($wheel.Name)" }
-          Copy-Item tadin-app\src-tauri\scripts\install.ps1             out\install.ps1             -ErrorAction SilentlyContinue
-          Copy-Item tadin-app\src-tauri\scripts\tadin-service-start.ps1 out\tadin-service-start.ps1 -ErrorAction SilentlyContinue
-          Copy-Item tadin-app\src-tauri\scripts\tadin-update.ps1        out\tadin-update.ps1        -ErrorAction SilentlyContinue
-          Get-ChildItem out
+          cargo install rsign2 --quiet
+          # rsign espera la clave en fichero; la key de Tauri es base64 del .key minisign.
+          $keyFile = Join-Path $env:TEMP "tadin.key"
+          [System.IO.File]::WriteAllText($keyFile,
+            [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:TAURI_SIGNING_PRIVATE_KEY)))
+
+          $entries = @()
+          foreach ($f in Get-ChildItem payload -File) {
+            $env:RSIGN_PASSWORD = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            echo $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD | rsign sign -s $keyFile "$($f.FullName)"
+            $sig = Get-Content "$($f.FullName).minisig" -Raw
+            $entries += @{ name = $f.Name; url = "${{ github.event.inputs.releases_url }}/$($f.Name)"; sig = $sig }
+          }
+          Remove-Item $keyFile -Force
+
+          $version = "${{ env.TADIN_VERSION }}".TrimStart('v')
+          @{ version = $version; files = $entries } | ConvertTo-Json -Depth 10 | Set-Content payload/manifest.json
+          @{ version = $version } | ConvertTo-Json | Set-Content payload/latest.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: |
-            out/*.exe
-            out/*.nsis.zip
-            out/*.nsis.zip.sig
-            out/*.whl
-            out/*.ps1
+            out/tadin-setup.exe
+            payload/**
           if-no-files-found: warn
 
       - name: Notify
