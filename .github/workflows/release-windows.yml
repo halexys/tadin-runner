@@ -60,6 +60,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tadin-installer -> target
+            tadin-app/src-tauri -> target
+
       - name: Install uv
         shell: pwsh
         run: |
